@@ -1,8 +1,9 @@
+import asyncio
 import logging
 import os
 from dotenv import load_dotenv
 from io import BytesIO
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 from PIL import Image
 
@@ -35,14 +36,22 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("Конвертировать в PDF", callback_data='convert')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    menu_text = 'Отправьте мне фотографии, и я верну их в формате PDF. Для завершения отправьте команду /convert'
-    if update.message:
-        await update.message.reply_text(menu_text, reply_markup=reply_markup)
+    menu_text = 'Отправьте мне фотографии, и я верну их в формате PDF'
+
+    if 'menu_message' in context.user_data:
+        try:
+            await context.user_data['menu_message'].delete()
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"Не удалось удалить предыдущее меню: {e}")
+
+    if update.message is not None:
+        sent_message = await update.message.reply_text(menu_text, reply_markup=reply_markup)
     elif update.callback_query:
-        current_message = update.callback_query.message
-        if current_message is not None and (
-                current_message.text != menu_text or current_message.reply_markup != reply_markup):
-            await current_message.edit_text(text=menu_text, reply_markup=reply_markup)
+        sent_message = await update.callback_query.message.reply_text(menu_text, reply_markup=reply_markup)
+
+    # Сохранение ссылки на новое сообщение меню
+    context.user_data['menu_message'] = sent_message
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -55,9 +64,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if user_id not in user_photos:
             user_photos[user_id] = []
         user_photos[user_id].append(img.convert('RGB'))
-    if len(user_photos[user_id]) == 1:
-        await update.message.reply_text('Фотография добавлена! Отправьте еще или введите /convert для завершения')
-        await show_menu(update, context)
+    await show_menu(update, context)
 
 
 async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -90,7 +97,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     if query.data == 'change_name':
-        await query.edit_message_text(text="Введите новое имя отчета:")
+        await query.message.reply_text("Введите новое имя отчета:")
         context.user_data['change_name'] = True
     elif query.data == 'convert':
         await convert(update, context)
@@ -108,7 +115,8 @@ async def handle_name_change(update: Update, context: ContextTypes.DEFAULT_TYPE)
             report_name[user_id] = new_name
             await update.message.reply_text(f'Имя отчета изменено на: {new_name}')
         else:
-            await update.message.reply_text('Имя отчета не может быть пустым. Попробуйте еще раз.')
+            await update.message.reply_text('Имя отчета не может быть пустым. Попробуйте еще раз')
+            return
         context.user_data['change_name'] = False
     await show_menu(update, context)
 
@@ -116,11 +124,12 @@ async def handle_name_change(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main() -> None:
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(CommandHandler('convert', convert))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name_change))
     app.run_polling()
+
 
 if __name__ == '__main__':
     main()
